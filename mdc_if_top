@@ -1,0 +1,70 @@
+`timescale 1ns / 1ps 
+
+module mdc_if_top(
+    input clk_8_3mhz,
+    input reset_n,
+    output [15:0] read_reg_data,
+    output read_valid,
+    output busy,
+    output mdc,
+    inout mdio
+    );
+wire pckt_rcvd;
+wire done;
+wire mdio_packet_valid;
+wire [95:0] mdio_packet_data;
+wire rd_wr_sig;
+wire read_en;
+wire mdio_in;
+wire mdio_out;
+
+
+(* dont_touch   = "yes" *)  mdio_interface2 mdio_if_inst(
+
+    .clk_8_3mhz(clk_8_3mhz),
+   .reset_n(reset_n),
+   .rd_wr_sig(rd_wr_sig),
+   .pckt_rcvd(pckt_rcvd),
+   .done(done),
+   .busy(busy),
+   .mdio_packet_valid(mdio_packet_valid),
+   .mdio_packet_reg(mdio_packet_data)
+    );
+    
+(* dont_touch   = "yes" *)  mdio_phy mdio_phy_inst(
+        .clk_8_3mhz(clk_8_3mhz),
+        .reset_n(reset_n),
+        .mdio_packet_data(mdio_packet_data),
+        .mdio_packet_valid(mdio_packet_valid),
+        .pckt_rcvd(pckt_rcvd),
+        .done(done),
+        .rd_wr_sig(rd_wr_sig),
+        .read_reg_data(read_reg_data),
+        .read_valid(read_valid),
+        .mdio_in(mdio_in),
+        .mdio_out(mdio_out),
+        .read_en(read_en),
+        .mdc(mdc)
+        );
+       
+  (* keep_hierarchy = "yes" *) IOBUF #(
+      .DRIVE(12),                   // Specify the output drive strength
+      .IBUF_LOW_PWR("TRUE"),        // Low Power - "TRUE", High Performance = "FALSE" 
+      .IOSTANDARD("DEFAULT"),       // Specify the I/O standard
+      .SLEW("FAST")                 // Specify the output slew rate
+   ) IOBUF_inst (
+      .O(mdio_in),                  // Buffer output
+      .IO(mdio),                    // Buffer inout port (connect directly to top-level port)
+      .I(mdio_out),                 // Buffer input
+      .T(read_en)                   // 3-state enable input, high=input, low=output
+   );
+   
+//   ila_1 your_instance_name (
+//       .clk(clk_8_3mhz), // input wire clk
+   
+   
+//       .probe0(mdio_in), // input wire [0:0]  probe0  
+//       .probe1(mdio_out) // input wire [0:0]  probe1
+//   ); 
+   
+endmodule
