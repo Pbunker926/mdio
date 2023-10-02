@@ -1,0 +1,490 @@
+`timescale 1ns / 1ps 
+module mdio_interface #(
+parameter REGISTER_RD_WR_CNT = 7//1 stands for 1st data; 2 stands for two data; 3 stands for three data ; 4 stands for four data
+)(
+    input clk_8_3mhz,
+    input reset_n,
+    input pckt_rcvd,
+    input done,
+    output rd_wr_sig,
+    output reg busy,
+    output reg mdio_packet_valid,
+    output reg [95:0] mdio_packet_reg
+    );
+//Communication State Machine States
+localparam [1:0]    idle            = 2'b00, 
+                    active          = 2'b01,
+                    send            = 2'b10,
+                    wait_state      = 2'b11;
+//Data Sequencer State Machine States    
+localparam [1:0]    data_idle           = 2'b00,
+                    data_feed           = 2'b01,
+                    data_infinite_wait  = 2'b10;
+//Data Sequencer State Machine States    
+localparam [1:0]    transact_idle   = 2'b00,
+                    transact_write  = 2'b01,
+                    transact_read   = 2'b10;                  
+                        
+reg [1:0] transact_state,transact_next_state;
+reg [1:0] state, next_state;// data communication states
+reg [1:0] data_state,data_state_next;// data sequencer states
+
+reg packetise_complt;
+reg transact_complt;
+reg rd_wr;
+
+reg [2:0] data_counter;
+reg [4:0] reg_addr;
+reg [15:0] reg_data;
+reg data_valid;
+reg data_seq_valid;
+reg [15:0] reg_data_i;
+                        
+wire data_valid_posedge;
+reg pckt_rcvd_d,pckt_rcvd_d1; 
+wire packet_rcvd;        
+reg done_d,done_d1; 
+wire transmit_complt;        
+reg transmit_complt_d;
+reg data_seq_valid_d, data_seq_valid_d1,data_seq_valid_d2,data_seq_valid_d3;
+
+
+/*reg [31:0] preamble         = {32{1'b1}};
+reg [1:0]sof                = 2'b01;
+reg [1:0] read_opcode       = 2'b10;
+reg [1:0] write_opcode      = 2'b01;
+reg [4:0] phy_addr_reg      = 5'b11111;//5'b11111;//5'b10101;
+reg [1:0] trn_arnd_read     = 2'bz0;
+reg [1:0] trn_arnd_write    = 2'b10;
+reg [1:0] opcode_reg        = 2'b00;
+reg [1:0] trn_arnd_reg      = 2'b00;
+
+
+parameter ROM_DEPTH = 16;
+parameter REGISTER_RD_WR_CNT = 2;//1 stands for 1st data; 2 stands for two data; 3 stands for three data ; 4 stands for four data
+
+reg [4:0]  register_addr [0:1] = {5'h0, 5'h4}; //, 5'h9,5'h10};//control reg(0X0);Auto-negotiation reg(0x4);1000-BaseT Control reg(0x9)
+reg [15:0]  register_data [0:1] = {16'hF000,16'h0101}; //,16'h0000,16'h0000};  //16'h1012};
+
+assign data_valid_posedge = ((data_counter == 3'b001) && (transact_complt == 1'b1))? 1'b0 : data_valid ;
+assign packet_rcvd = (pckt_rcvd_d && (~ pckt_rcvd_d1));
+assign transmit_complt = (done_d && (~ done_d1));
+assign rd_wr_sig = rd_wr;*/
+
+reg [31:0] preamble         = {32{1'b1}};
+reg [1:0]sof                = 2'b01;
+reg [1:0] read_opcode       = 2'b10;
+reg [1:0] write_opcode      = 2'b01;
+reg [4:0] phy_addr_reg      = 5'b00011;//5'b11111;//5'b10101;
+reg [1:0] trn_arnd_read     = 2'bz0;
+reg [1:0] trn_arnd_write    = 2'b10;
+reg [1:0] opcode_reg        = 2'b00;
+reg [1:0] trn_arnd_reg      = 2'b00;
+
+
+//parameter ROM_DEPTH = 16;
+
+/*reg [4:0]  register_addr [0:6] = {5'h1,5'h0, 5'h4, 5'h9,5'h10,5'h3,5'h2};//control reg(0X0);Auto-negotiation reg(0x4);1000-BaseT Control reg(0x9)
+reg [15:0]  register_data [0:6] = {16'h0000,16'hB300,16'h0081,16'h0000,16'h0462,16'h0000,16'h0000};*/
+
+reg [4:0] register_addr[0:6];//control reg(0X0);Auto-negotiation reg(0x4);1000-BaseT Control reg(0x9)
+reg [15:0] register_data[0:6];
+
+assign data_valid_posedge = ((data_counter == 3'b001) && (transact_complt == 1'b1))? 1'b0 : data_valid ;
+assign packet_rcvd = (pckt_rcvd_d && (~ pckt_rcvd_d1));
+assign transmit_complt = (done_d && (~ done_d1));
+assign rd_wr_sig = rd_wr;
+
+//Data Sampling edge detect
+always@(posedge clk_8_3mhz)
+begin
+  if(!reset_n)
+  begin
+    pckt_rcvd_d <= 1'b0;
+    pckt_rcvd_d1 <= 1'b0;
+    done_d <= 1'b0;
+    done_d1 <= 1'b0;
+    transmit_complt_d <= 1'b0;
+    data_seq_valid_d <= 1'b0;
+    data_seq_valid_d1 <= 1'b0;
+    data_seq_valid_d2 <= 1'b0;
+    data_seq_valid_d3 <= 1'b0;
+	register_addr[0] <= 5'h0;
+    register_addr[1] <= 5'h0;
+    register_addr[2] <= 5'h0;
+    register_addr[3] <= 5'h0;
+    register_addr[4] <= 5'h0;
+    register_addr[5] <= 5'h0;
+    register_addr[6] <= 5'h0; 
+    register_data[0] <= 16'h0000;
+    register_data[1] <= 16'h0000;
+    register_data[2] <= 16'h0000;
+    register_data[3] <= 16'h0000;
+    register_data[4] <= 16'h0000;
+    register_data[5] <= 16'h0000;
+    register_data[6] <= 16'h0000;
+  end
+  else
+  begin
+    pckt_rcvd_d <= pckt_rcvd;
+    pckt_rcvd_d1 <= pckt_rcvd_d;
+    transmit_complt_d <= transmit_complt;
+    done_d <= done;
+    done_d1 <= done_d;
+    data_seq_valid_d <= data_seq_valid;
+    data_seq_valid_d1 <= data_seq_valid_d;
+    data_seq_valid_d2 <= data_seq_valid_d1;
+    data_seq_valid_d3 <= data_seq_valid_d2;
+	register_addr[0] <= 5'h2;
+    register_addr[1] <= 5'h4;
+    register_addr[2] <= 5'h0;
+    register_addr[3] <= 5'h15;
+    register_addr[4] <= 5'h16;
+    register_addr[5] <= 5'h10;
+    register_addr[6] <= 5'h0; 
+    register_data[0] <= 16'h0000;
+    register_data[1] <= 16'h0081;
+    register_data[2] <= 16'hA000;
+    register_data[3] <= 16'h3000;
+    register_data[4] <= 16'h0002;
+    register_data[5] <= 16'h1023;
+    register_data[6] <= 16'hA000;
+  end
+end
+////////////////////////////////////////////////////////////////////////////////////////
+//ROM data fetches based on the Data Counter Value
+
+always @(posedge clk_8_3mhz)
+begin
+  if (!reset_n)
+  begin
+    reg_addr <= 5'b0;
+    reg_data <= 16'b0;
+    data_valid <= 1'b0;
+  end
+  else 
+  begin
+  case (data_counter)
+  4'b001: 
+   begin
+    reg_addr <= register_addr[0];
+    reg_data <= register_data[0];
+    data_valid <= 1'b1;
+   end
+  4'b010: 
+   begin
+    reg_addr <= register_addr[1];
+    reg_data <= register_data[1];
+    data_valid <= 1'b1;
+   end
+  4'b011:               
+   begin
+    reg_addr <= register_addr[2];
+    reg_data <= register_data[2];
+    data_valid <= 1'b1;
+   end
+  4'b100:                
+   begin
+   reg_addr <= register_addr[3];
+   reg_data <= register_data[3];
+   data_valid <= 1'b1;
+   end
+  4'b101: 
+    begin
+     reg_addr <= register_addr[4];
+     reg_data <= register_data[4];
+     data_valid <= 1'b1;
+    end
+  4'b110: 
+    begin
+     reg_addr <= register_addr[5];
+     reg_data <= register_data[5];
+     data_valid <= 1'b1;
+    end
+  4'b111:                 
+    begin
+     reg_addr <= register_addr[6];
+     reg_data <= register_data[6];
+     data_valid <= 1'b1;
+    end
+   4'b000:                 
+    begin
+     reg_addr <= register_addr[0];
+     reg_data <= register_data[0];
+     data_valid <= 1'b0;
+    end
+  default: 
+    begin
+     reg_addr <= register_addr[0];
+     reg_data <= register_data[0];
+     data_valid <= 1'b1;
+    end
+   endcase
+  end
+ end
+////////////////////////////////////////////////////////////////////////////////////////////
+//************************Data Fetch State Machine***************************************//*
+////////////////////////////////////////////////////////////////////////////////////////////
+
+//Data Fetch State Register
+always @(posedge clk_8_3mhz)
+begin
+  if (!reset_n)
+  begin
+  data_state <= data_idle;
+  end
+ else
+ begin 
+  data_state <= data_state_next;
+ end
+end
+
+//Next State Logic for Data Fetch State Machine     
+always @ *
+  begin
+    case(data_state)
+    data_idle:
+      begin
+      if((reset_n) && (REGISTER_RD_WR_CNT != 0))
+          data_state_next <= data_feed;
+      else
+         data_state_next <= data_idle;
+      end
+    data_feed : 
+      begin
+      if ((data_counter == 3'b000) || ((data_counter == 3'b001) && (transact_complt == 1'b1)))
+        data_state_next <= data_infinite_wait; 
+      else
+        data_state_next <= data_feed;
+      end
+    data_infinite_wait:
+     data_state_next <= data_infinite_wait; 
+    default:
+     data_state_next <= data_idle;
+    endcase
+  end
+  
+//Output Logic for Data Fetch state Machine      
+always @(posedge clk_8_3mhz)
+begin
+ if (!reset_n)
+ begin
+  data_counter <= 3'b0;
+  data_seq_valid <= 1'b0;
+ end
+else
+begin
+ if(data_state == data_idle)
+ begin
+  if(REGISTER_RD_WR_CNT != 0) 
+    begin        
+    data_counter <= REGISTER_RD_WR_CNT;
+    data_seq_valid <= 1'b1;
+    end
+  else
+    begin
+    data_counter <= 3'b0;
+    data_seq_valid <= 1'b0;
+    end
+ end
+ else if(data_state == data_feed)
+  begin
+     if (transact_complt == 1'b1)
+      begin
+        data_counter <= data_counter - 1;
+        data_seq_valid <= 1'b1;
+      end
+     else if(transmit_complt_d == 1'b1)
+     begin
+      data_seq_valid <= 1'b1;
+      data_counter <= data_counter;
+     end
+     else
+     begin
+       data_counter <= data_counter;
+       data_seq_valid <= 1'b0;
+     end
+  end
+  else
+   begin
+    data_counter <= 3'b0;
+    data_seq_valid <= 1'b0;
+   end
+ end
+ end
+////////////////////////////////////////////////////////////////////////////////////////////
+//************************ Transact State Machine*******************************************//*
+////////////////////////////////////////////////////////////////////////////////////////////
+//Read_Write Transaction State Register
+always@ (posedge clk_8_3mhz)
+begin 
+if (!reset_n) 
+  transact_state <= transact_idle;
+else
+  transact_state <= transact_next_state;
+end
+
+// Next_State_Logic for Read_Write  Transaction State Machine
+always@ *
+begin 
+case (transact_state)
+transact_idle: 
+  if(data_counter > 3'b000)
+    transact_next_state <= transact_write;
+  else 
+    transact_next_state <= transact_idle;
+transact_write: 
+  if(transmit_complt_d == 1'b1)
+    transact_next_state <= transact_read;
+  else 
+    transact_next_state <= transact_write;
+transact_read : 
+  if(transmit_complt_d == 1'b1)
+    transact_next_state <= transact_idle;
+  else 
+    transact_next_state <= transact_read;
+default:
+    transact_next_state <= transact_idle;
+endcase           
+end
+
+// Output logic for Read_Write State Machine
+always@ (posedge clk_8_3mhz)
+begin
+if(!reset_n)
+  begin
+  rd_wr <= 1'b0;
+  reg_data_i <= reg_data;
+  transact_complt <= 1'b0;
+  end
+else
+  begin
+  transact_complt <= 1'b0;
+  case(transact_state)
+  transact_idle:
+    begin
+      rd_wr <= 1'b0;
+      reg_data_i <= reg_data_i;
+    end
+  transact_write: 
+    begin
+      rd_wr <= 1'b0;
+      if((data_seq_valid_d2 == 1'b1) && (data_valid_posedge == 1'b1))
+      reg_data_i <= reg_data;
+    end
+  transact_read:
+    begin
+    rd_wr <= 1'b1;
+    reg_data_i <= {16{1'bz}};
+//    reg_data_i <= 16'h0f0f;//for testing
+    if(transmit_complt_d == 1'b1)
+      begin
+      transact_complt <= 1'b1;
+      end
+    else
+      transact_complt <= 1'b0;
+    end
+  default :
+    begin
+      rd_wr <= 1'b0;
+      reg_data_i <= reg_data_i;
+    end
+  endcase
+  end
+end
+////////////////////////////////////////////////////////////////////////////////////////////
+//************************ Data Communication State Machine*******************************************//*
+////////////////////////////////////////////////////////////////////////////////////////////         
+// Data Communication state_register 
+always @(posedge clk_8_3mhz)
+begin 
+if (!reset_n) 
+    state <= idle;
+else
+    state <= next_state;
+end
+
+// next_state_logic for Data Communication state machine
+always@*
+begin 
+case (state)
+idle: if((data_valid_posedge == 1'b1) && (data_seq_valid_d3 == 1'b1))
+        next_state <= active;
+      else 
+        next_state <= idle;
+active: if(packetise_complt == 1'b1)
+        next_state <= send;
+      else 
+        next_state <= active;
+send : if(packet_rcvd == 1'b1)
+        next_state <= wait_state;
+      else 
+        next_state <= send;        
+wait_state : if(transmit_complt_d == 1'b1)
+            next_state <= idle;
+         else 
+            next_state <= wait_state;
+default:
+        next_state <= idle;
+endcase           
+end
+//Output logic for Data Communication State Machine
+always@(posedge clk_8_3mhz)
+begin
+if(!reset_n)
+begin
+    mdio_packet_reg <= {96{1'b0}};
+    mdio_packet_valid <= 1'b0;
+end
+else
+  case(state)
+  idle: 
+    begin
+     mdio_packet_reg <= {96{1'b1}};
+     busy <= 1'b0;
+     packetise_complt <= 1'b0;
+     mdio_packet_valid <= 1'b0;
+    end
+  active: 
+    begin
+     busy <= 1'b1;
+      if(rd_wr == 1'b1)
+      begin
+         opcode_reg <= read_opcode;
+         mdio_packet_reg <= {preamble,sof,opcode_reg,phy_addr_reg,reg_addr,2'bz0,{16{1'b1}},preamble};
+         mdio_packet_valid <= 1'b1;
+         packetise_complt <= 1'b1;  
+      end
+      else
+      begin
+         opcode_reg <= write_opcode;
+         trn_arnd_reg <= trn_arnd_write;
+         mdio_packet_reg <= {preamble,sof,opcode_reg,phy_addr_reg,reg_addr,trn_arnd_reg,reg_data_i,preamble};
+         mdio_packet_valid <= 1'b1;
+         packetise_complt <= 1'b1;
+      end
+    end
+  send : 
+    begin
+     busy <= 1'b1;
+     mdio_packet_reg <= mdio_packet_reg;
+     packetise_complt <= 1'b0;
+     mdio_packet_valid <= 1'b0;
+    end
+  wait_state : 
+    begin
+     busy <= 1'b1;
+     mdio_packet_reg <= mdio_packet_reg;
+     packetise_complt <= 1'b0;
+     mdio_packet_valid <= 1'b0;
+    end
+  default: 
+    begin
+      mdio_packet_reg <= {96{1'b1}};
+      packetise_complt <= 1'b0;
+      mdio_packet_valid <= 1'b0;
+      busy <= 1'b0;
+    end
+  endcase
+end
+endmodule
